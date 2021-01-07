@@ -200,7 +200,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 			Expect(status.IntOutput()).Should(Equal(numEntries), "Did not find expected number of entries in BPF tunnel map")
 		}
 
-		SkipItIf(helpers.RunsWithKubeProxyReplacement, "Check connectivity with transparent encryption and VXLAN encapsulation", func() {
+		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and VXLAN encapsulation", func() {
 			// FIXME(brb) Currently, the test is broken with CI 4.19 setup. Run it on 4.19
 			//			  once we have kube-proxy disabled there.
 			if !helpers.RunsOnNetNextKernel() {
@@ -210,7 +210,8 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
 			deploymentManager.DeployCilium(map[string]string{
-				"encryption.enabled": "true",
+				"kubeProxyReplacement": "disabled",
+				"encryption.enabled":   "true",
 			}, DeployCiliumOptionsAndDNS)
 			validateBPFTunnelMap()
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test with IPsec between nodes failed")
@@ -553,7 +554,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 	})
 
 	Context("Transparent encryption DirectRouting", func() {
-		SkipItIf(helpers.RunsWithKubeProxyReplacement, "Check connectivity with transparent encryption and direct routing", func() {
+		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and direct routing", func() {
 			SkipIfIntegration(helpers.CIIntegrationFlannel)
 			SkipIfIntegration(helpers.CIIntegrationGKE)
 
@@ -562,6 +563,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
 			deploymentManager.DeployCilium(map[string]string{
+				"kubeProxyReplacement": "disabled",
 				"tunnel":               "disabled",
 				"autoDirectNodeRoutes": "true",
 				"encryption.enabled":   "true",
@@ -571,7 +573,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 			}, DeployCiliumOptionsAndDNS)
 			Expect(testPodConnectivityAcrossNodes(kubectl)).Should(BeTrue(), "Connectivity test between nodes failed")
 		})
-		SkipItIf(helpers.RunsWithKubeProxyReplacement, "Check connectivity with transparent encryption and direct routing with bpf_host", func() {
+		SkipItIf(helpers.RunsWithoutKubeProxy, "Check connectivity with transparent encryption and direct routing with bpf_host", func() {
 			SkipIfIntegration(helpers.CIIntegrationFlannel)
 			SkipIfIntegration(helpers.CIIntegrationGKE)
 
@@ -580,6 +582,7 @@ var _ = Describe("K8sDatapathConfig", func() {
 
 			deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
 			deploymentManager.DeployCilium(map[string]string{
+				"kubeProxyReplacement": "disabled",
 				"tunnel":               "disabled",
 				"autoDirectNodeRoutes": "true",
 				"encryption.enabled":   "true",

@@ -1980,22 +1980,43 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`, helpers.DualStackSupp
 			})
 		})
 
-		SkipContextIf(helpers.RunsWithKubeProxyReplacement, "Tests NodePort (kube-proxy)", func() {
+		SkipContextIf(helpers.RunsWithoutKubeProxy, "Tests NodePort (kube-proxy)", func() {
+			options := make(map[string]string)
+
+			BeforeAll(func() {
+				options["kubeProxyReplacement"] = "disabled"
+				DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, options)
+			})
+
+			AfterAll(func() {
+				DeployCiliumAndDNS(kubectl, ciliumFilename)
+			})
+
+			It("", func() {
+				testNodePort(false, false, false, 0)
+			})
+
+			SkipItIf(func() bool {
+				return helpers.SkipQuarantined() && helpers.SkipK8sVersions("1.14.x")
+			}, "with externalTrafficPolicy=Local", func() {
+				testExternalTrafficPolicyLocal()
+			})
+
 			SkipItIf(helpers.DoesNotRunOnNetNextOr419Kernel, "with IPSec and externalTrafficPolicy=Local", func() {
 				deploymentManager.SetKubectl(kubectl)
 				deploymentManager.Deploy(helpers.CiliumNamespace, IPSecSecret)
-				DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, map[string]string{
-					"encryption.enabled": "true",
-				})
+				options["encryption.enabled"] = "true"
+				DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, options)
+				delete(options, "encryption.enabled")
 				testExternalTrafficPolicyLocal()
 				deploymentManager.DeleteAll()
 				deploymentManager.DeleteCilium()
 			})
 
-			SkipItIf(func() bool { return helpers.SkipQuarantined() && helpers.SkipK8sVersions("1.14.x") }, "with the host firewall and externalTrafficPolicy=Local", func() {
-				options := map[string]string{
-					"hostFirewall": "true",
-				}
+			SkipItIf(func() bool {
+				return helpers.SkipQuarantined() && helpers.SkipK8sVersions("1.14.x")
+			}, "with the host firewall and externalTrafficPolicy=Local", func() {
+				options["hostFirewall"] = "true"
 				// We can't rely on gke.enabled because it enables
 				// per-endpoint routes which are incompatible with
 				// the host firewall.
@@ -2004,16 +2025,10 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`, helpers.DualStackSupp
 					options["tunnel"] = "disabled"
 				}
 				DeployCiliumOptionsAndDNS(kubectl, ciliumFilename, options)
+				delete(options, "tunnel")
+				delete(options, "gke.enabled")
+				delete(options, "hostFirewall")
 				testExternalTrafficPolicyLocal()
-			})
-
-			SkipItIf(func() bool { return helpers.SkipQuarantined() && helpers.SkipK8sVersions("1.14.x") }, "with externalTrafficPolicy=Local", func() {
-				DeployCiliumAndDNS(kubectl, ciliumFilename)
-				testExternalTrafficPolicyLocal()
-			})
-
-			It("", func() {
-				testNodePort(false, false, false, 0)
 			})
 		})
 
