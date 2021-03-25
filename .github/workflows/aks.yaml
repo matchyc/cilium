@@ -1,9 +1,9 @@
-name: ConformanceGKE
+name: ConformanceAKS
 
 on:
-  # pull_request_target:
-  #   types:
-  #     - "labeled"
+  pull_request_target:
+    types:
+      - "labeled"
   # WARNING FOR REVIEWERS
   # The `pull_request` webhook event should never be uncommented on `master`,
   # so as not to allow access to or leak repo's secrets.
@@ -16,14 +16,14 @@ on:
       - master
 
 env:
-  clusterName: cilium-cli-ci-${{ github.run_id }}
-  zone: us-west2-a
+  name: cilium-cli-ci-${{ github.run_id }}
+  location: westeurope
   check_name: ${{ github.workflow }}
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
   concurrent-runs-guard:
-    if: ${{ github.event.label.name == 'ci-run/gke' || github.event_name == 'push' }}
+    if: ${{ github.event.label.name == 'ci-run/aks' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
@@ -39,7 +39,7 @@ jobs:
     needs: concurrent-runs-guard
     if: ${{ needs.concurrent-runs-guard.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Set image tag
         id: vars
@@ -70,47 +70,57 @@ jobs:
           sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/bin
           rm cilium-linux-amd64.tar.gz
 
-      - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@master
+      - name: Login to Azure
+        uses: azure/login@v1
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_PR_SA_KEY }}
-          export_default_credentials: true
+          creds: ${{ secrets.AZURE_PR_SP_CREDS }}
 
-      - name: Display gcloud CLI info
-        run: |
-          gcloud info
+      - name: Display Azure CLI info
+        uses: azure/CLI@v1
+        with:
+          azcliversion: 2.0.72
+          inlineScript: |
+            az account show
 
-      - name: Create GKE cluster
+      - name: Create AKS cluster
         run: |
-          gcloud container clusters create ${{ env.clusterName }} \
-            --preemptible \
-            --labels "usage=pr,owner=${{ github.event.pull_request.number || github.sha }}" \
-            --image-type COS \
-            --num-nodes 2 \
-            --machine-type n1-standard-4 \
-            --zone ${{ env.zone }}
+          az group create \
+            --name ${{ env.name }} \
+            --location ${{ env.location }} \
+            --tags "owner=${{ github.event.pull_request.number || github.sha }}"
+          az aks create \
+            --resource-group ${{ env.name }} \
+            --name ${{ env.name }} \
+            --location ${{ env.location }} \
+            --network-plugin azure \
+            --generate-ssh-keys \
+            --node-count 2
 
       - name: Get cluster credentials
         run: |
-          gcloud container clusters get-credentials ${{ env.clusterName }} --zone ${{ env.zone }}
+          az aks get-credentials \
+            --resource-group ${{ env.name }} \
+            --name ${{ env.name }}
 
       - name: Wait for images to be available
         timeout-minutes: 10
         shell: bash
         run: |
           until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/cilium-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
-          until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/operator-generic-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
+          until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/operator-azure-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
 
       - name: Install Cilium
         run: |
           cilium install \
-            --cluster-name=${{ env.clusterName }} \
+            --cluster-name ${{ env.name }} \
             --wait=false \
-            --restart-unmanaged-pods=false \
             --config monitor-aggregation=none \
+            --azure-resource-group ${{ env.name }} \
+            --azure-tenant-id ${{ secrets.AZURE_PR_SP_TENANT_ID}} \
+            --azure-client-id ${{ secrets.AZURE_PR_SP_CLIENT_ID }} \
+            --azure-client-secret ${{ secrets.AZURE_PR_SP_CLIENT_SECRET }} \
             --agent-image=quay.io/${{ github.repository_owner }}/cilium-ci \
-            --operator-image=quay.io/${{ github.repository_owner }}/operator-generic-ci \
+            --operator-image=quay.io/${{ github.repository_owner }}/operator-azure-ci \
             --version ${{ steps.vars.outputs.tag }}
 
       - name: Enable Relay
@@ -138,10 +148,10 @@ jobs:
           curl -sLO https://github.com/cilium/cilium-sysdump/releases/latest/download/cilium-sysdump.zip
           python cilium-sysdump.zip --output cilium-sysdump-out
 
-      - name: Clean up GKE
+      - name: Clean up AKS
         if: ${{ always() }}
         run: |
-          gcloud container clusters delete ${{ env.clusterName }} --zone ${{ env.zone }} --quiet
+          az group delete --name ${{ env.name }} --yes
 
       - name: Upload artifacts
         if: ${{ always() }}

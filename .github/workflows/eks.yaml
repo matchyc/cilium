@@ -1,9 +1,9 @@
-name: ConformanceGKE
+name: ConformanceEKS
 
 on:
-  # pull_request_target:
-  #   types:
-  #     - "labeled"
+  pull_request_target:
+    types:
+      - "labeled"
   # WARNING FOR REVIEWERS
   # The `pull_request` webhook event should never be uncommented on `master`,
   # so as not to allow access to or leak repo's secrets.
@@ -17,13 +17,13 @@ on:
 
 env:
   clusterName: cilium-cli-ci-${{ github.run_id }}
-  zone: us-west2-a
+  region: us-east-2
   check_name: ${{ github.workflow }}
   check_url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
   concurrent-runs-guard:
-    if: ${{ github.event.label.name == 'ci-run/gke' || github.event_name == 'push' }}
+    if: ${{ github.event.label.name == 'ci-run/eks' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
@@ -39,7 +39,7 @@ jobs:
     needs: concurrent-runs-guard
     if: ${{ needs.concurrent-runs-guard.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Set image tag
         id: vars
@@ -70,48 +70,51 @@ jobs:
           sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/bin
           rm cilium-linux-amd64.tar.gz
 
-      - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@master
+      - name: Install eksctl CLI
+        run: |
+          curl -LO "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz"
+          sudo tar xzvfC eksctl_$(uname -s)_amd64.tar.gz /usr/bin
+          rm eksctl_$(uname -s)_amd64.tar.gz
+
+      - name: Set up AWS CLI credentials
+        uses: aws-actions/configure-aws-credentials@v1
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_PR_SA_KEY }}
-          export_default_credentials: true
+          aws-access-key-id: ${{ secrets.AWS_PR_SA_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_PR_SA_KEY }}
+          aws-region: ${{ env.region }}
 
-      - name: Display gcloud CLI info
+      - name: Create EKS cluster without nodegroup
         run: |
-          gcloud info
-
-      - name: Create GKE cluster
-        run: |
-          gcloud container clusters create ${{ env.clusterName }} \
-            --preemptible \
-            --labels "usage=pr,owner=${{ github.event.pull_request.number || github.sha }}" \
-            --image-type COS \
-            --num-nodes 2 \
-            --machine-type n1-standard-4 \
-            --zone ${{ env.zone }}
-
-      - name: Get cluster credentials
-        run: |
-          gcloud container clusters get-credentials ${{ env.clusterName }} --zone ${{ env.zone }}
+          eksctl create cluster \
+            --name ${{ env.clusterName }} \
+            --without-nodegroup
 
       - name: Wait for images to be available
         timeout-minutes: 10
         shell: bash
         run: |
           until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/cilium-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
-          until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/operator-generic-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
+          until curl --silent -f -lSL "https://quay.io/api/v1/repository/${{ github.repository_owner }}/operator-aws-ci/tag/${{ steps.vars.outputs.tag }}/images" &> /dev/null; do sleep 45s; done
 
       - name: Install Cilium
         run: |
           cilium install \
-            --cluster-name=${{ env.clusterName }} \
+            --cluster-name ${{ env.clusterName }} \
             --wait=false \
-            --restart-unmanaged-pods=false \
             --config monitor-aggregation=none \
             --agent-image=quay.io/${{ github.repository_owner }}/cilium-ci \
-            --operator-image=quay.io/${{ github.repository_owner }}/operator-generic-ci \
+            --operator-image=quay.io/${{ github.repository_owner }}/operator-aws-ci \
             --version ${{ steps.vars.outputs.tag }}
+
+      - name: Add managed spot nodegroup
+        run: |
+          eksctl create nodegroup \
+            --cluster ${{ env.clusterName }} \
+            --tags "usage=pr,owner=${{ github.event.pull_request.number || github.sha }}" \
+            --managed \
+            --spot \
+            --nodes 2 \
+            --node-private-networking
 
       - name: Enable Relay
         run: |
@@ -128,7 +131,7 @@ jobs:
 
       - name: Run connectivity test
         run: |
-          cilium connectivity test
+          cilium connectivity test --test '!pod-to-local-nodeport'
 
       - name: Post-test information gathering
         if: ${{ always() }}
@@ -138,10 +141,10 @@ jobs:
           curl -sLO https://github.com/cilium/cilium-sysdump/releases/latest/download/cilium-sysdump.zip
           python cilium-sysdump.zip --output cilium-sysdump-out
 
-      - name: Clean up GKE
+      - name: Clean up EKS
         if: ${{ always() }}
         run: |
-          gcloud container clusters delete ${{ env.clusterName }} --zone ${{ env.zone }} --quiet
+          eksctl delete cluster --name ${{ env.clusterName }}
 
       - name: Upload artifacts
         if: ${{ always() }}
